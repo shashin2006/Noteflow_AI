@@ -6,7 +6,7 @@ load_dotenv()
 
 class Settings:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://hydratrac_db_user:4BnfjuLPPmMTWS6M@cluster0.y0b0wwy.mongodb.net/")
+    MONGODB_URI = os.getenv("MONGODB_URI", "")
     MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "ai_doc_search")
     UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./data/uploads")
     VECTOR_STORE_PATH = os.getenv("VECTOR_STORE_PATH", "./data/vectorstore/faiss_index")
