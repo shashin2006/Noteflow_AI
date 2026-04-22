@@ -84,9 +84,14 @@ HF_API_KEY=huggingface_key
 /api/chat-stream
 /api/chat-history
 /api/pdfs
-📸 Demo
 
-Add screenshots or demo video here
+📸 Demo
+<img width="1919" height="1009" alt="image" src="https://github.com/user-attachments/assets/6157e25d-b2dd-401b-9829-05b8b10bee98" />
+<img width="1919" height="1023" alt="image" src="https://github.com/user-attachments/assets/b90ee204-b193-4193-b71a-5ce5d86e9044" />
+<img width="1919" height="1000" alt="image" src="https://github.com/user-attachments/assets/48dd62ec-c1fa-4c28-bd58-2a6ff2f0560d" />
+
+Working Demo LinkedIn
+https://www.linkedin.com/posts/shashin-r-985a2a321_genai-artificialintelligence-fullstackdevelopment-activity-7452660117457608705-16Sz?utm_source=share&utm_medium=member_desktop&rcm=ACoAAFF88vUBx1xNO3toA5TTEvOk95wRDYmPoLs
 
 🧠 Future Improvements
 Chat sidebar (multi-session UI)
