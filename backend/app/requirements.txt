@@ -7,3 +7,9 @@ pymongo
 faiss-cpu
 PyPDF2
 python-dotenv
+
+# 🔥 REQUIRED ADDITIONS
+passlib[bcrypt]
+cloudinary
+huggingface_hub
+pydantic-settings
