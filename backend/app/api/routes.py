@@ -1,50 +1,288 @@
 import os
-from fastapi import APIRouter, UploadFile, File, Form
-from langchain.text_splitter import CharacterTextSplitter
+from bson.errors import InvalidId
+from fastapi import APIRouter, UploadFile, File, Form, Header
+from bson import ObjectId
+from datetime import datetime
+from uuid import uuid4
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from fastapi.responses import StreamingResponse
+from app.utils.session import get_user_from_session
 from app.services.vector_store import load_or_create_faiss, save_faiss
-from app.services.embeddings import get_embeddings
 from app.services.rag_pipeline import get_rag_chain
 from app.db.mongodb import get_collection
 from app.core.config import settings
+from app.services.pdf_loader import extract_text_from_pdf
+from app.services.cloudinary_service import upload_to_cloudinary
+from passlib.context import CryptContext
+
+
+# 🔥 NEW IMPORTS
+from app.services.image_service import generate_image
+from app.services.image_detector import is_image_request
 
 router = APIRouter()
 
-@router.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-    upload_path = os.path.join(settings.UPLOAD_DIR, file.filename)
-    with open(upload_path, "wb") as f:
-        f.write(await file.read())
+@router.post("/login")
+async def login(email: str = Form(...), password: str = Form(...)):
+    users = get_collection("users")
 
-    text = extract_text_from_pdf(upload_path)
-    if not text or not text.strip():
-        return {"error": "No text found in PDF"}
+    user = users.find_one({"email": email})
+    if not user:
+        return {"error": "User not found"}
 
-    splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = splitter.split_text(text)
+    password = str(password).strip()
+    password = password.encode("utf-8")[:72].decode("utf-8", "ignore")
 
-    vector_store = load_or_create_faiss()
-    vector_store.add_texts(chunks)
-    save_faiss(vector_store)
+    if not pwd_context.verify(password, user["password"]):
+        return {"error": "Invalid password"}
 
-    pdfs = get_collection("pdfs")
-    pdfs.insert_one({"filename": file.filename, "path": upload_path})
+    session_id = str(uuid4())
 
-    return {"message": f"Uploaded and indexed {file.filename}", "chunks_indexed": len(chunks)}
+    get_collection("sessions").insert_one({
+        "session_id": session_id,
+        "user_id": str(user["_id"])
+    })
+
+    return {"session_id": session_id}
+# =========================================
+# ☁️ UPLOAD PDF
+# =========================================
+
+@router.post("/upload-cloud")
+async def upload_pdf_cloud(
+    file: UploadFile = File(...),
+    session_id: str = Header(None, alias="session-id")
+):
+    user_id = get_user_from_session(session_id)
+    if not user_id:
+        return {"error": "Invalid session"}
+
+    try:
+        os.makedirs("data/uploads", exist_ok=True)
+
+        file_path = f"data/uploads/{file.filename}"
+
+        contents = await file.read()
+        if not contents:
+            return {"error": "Empty file"}
+
+        with open(file_path, "wb") as f:
+            f.write(contents)
+
+        url = upload_to_cloudinary(file_path)
+
+        text = extract_text_from_pdf(file_path)
+        if not text.strip():
+            return {"error": "No text found in PDF"}
 
 
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=800,
+            chunk_overlap=150
+        )
 
+        chunks = splitter.split_text(text)
+
+        vector_store = load_or_create_faiss()
+
+        vector_store.add_texts(
+            chunks,
+            metadatas=[{
+                "user_id": user_id,
+                "source": file.filename
+             }] * len(chunks)
+        )
+
+        save_faiss(vector_store)
+
+        get_collection("extra").insert_one({
+          "user_id": user_id,
+          "filename": file.filename,
+          "cloudinary_url": url,
+          "uploaded_at": datetime.utcnow()
+        })
+
+        return {"message": "Uploaded & indexed", "url": url}
+    except Exception as e:
+        print("UPLOAD ERROR:", e)
+        return {"error": str(e)}
+
+
+# =========================================
+# 💬 CHAT
+# =========================================
 @router.post("/chat")
-async def chat_with_docs(query: str = Form(...)):
-    chain = get_rag_chain()
-    response = chain.run(query)
-    chats = get_collection("chats")
-    chats.insert_one({"query": query, "response": response})
-    return {"answer": response}
+async def chat_with_docs(
+    query: str = Form(...),
+    session_id: str = Header(None, alias="session-id")
+):
+    user_id = get_user_from_session(session_id)
+    if not user_id:
+        return {"error": "Invalid session"}
+
+    chats_collection = get_collection("chats")
+
+    chain = get_rag_chain(user_id)
+    result = chain.invoke({"query": query})
+    chat_id = str(uuid4())
+    answer = result.get("result") or result.get("answer") or ""
+
+    if not answer.strip():
+        answer = "Answer not found in document"
+
+    chats_collection.insert_one({
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "query": query,
+        "response": answer,
+        "timestamp": datetime.utcnow()
+    })
+
+    return {"answer": answer}
 
 
+# =========================================
+# 📂 LIST PDFs
+# =========================================
 @router.get("/pdfs")
-async def list_pdfs():
-    pdfs = get_collection("pdfs")
-    return [{"filename": doc["filename"], "path": doc["path"]} for doc in pdfs.find()]
+async def list_pdfs(session_id: str = Header(None, alias="session-id")):
+    print("SESSION HEADER:", session_id) 
+    user_id = get_user_from_session(session_id)
+    if not user_id:
+        return []
+
+    docs_collection = get_collection("extra")
+
+    data = list(docs_collection.find({"user_id": user_id}))
+
+    return [
+        {
+            "filename": doc["filename"],
+            "url": doc["cloudinary_url"]
+        }
+        for doc in data
+    ]
+# =========================================
+# 💬 CHAT HISTORY
+# =========================================
+@router.get("/chat-history")
+async def get_chat_history(session_id: str = Header(None, alias="session-id")):
+    user_id = get_user_from_session(session_id)
+    if not user_id:
+        return [] 
+
+    chats = get_collection("chats")
+
+    data = list(
+        chats.find({"user_id": user_id})
+        .sort("timestamp", 1)
+    )
+
+    # ✅ FIX: convert ObjectId to string
+    cleaned = []
+    for chat in data:
+        cleaned.append({
+            "_id": str(chat["_id"]),  # ✅ FIX
+            "user_id": chat.get("user_id"),
+            "chat_id": chat.get("chat_id"),
+            "query": chat.get("query"),
+            "response": chat.get("response"),
+            "timestamp": chat.get("timestamp"),
+        })
+
+    return cleaned
+
+# =========================================
+# 🔥 STREAM CHAT + IMAGE (NEW)
+# =========================================
+@router.post("/chat-stream")
+async def chat_stream(
+    query: str = Form(...),
+    chat_id: str = Form(...),  # ✅ NEW
+    session_id: str = Header(None, alias="session-id")
+):
+    user_id = get_user_from_session(session_id)
+    if not user_id:
+        return {"error": "Invalid session"}
+
+    chats_collection = get_collection("chats")
+
+    if is_image_request(query):
+
+        async def stream():
+            try:
+                chain = get_rag_chain(user_id)
+                result = chain.invoke({"query": query})
+                context = result.get("result") or result.get("answer") or ""
+
+                image_url = generate_image(query, context)
+
+                chats_collection.insert_one({
+                    "user_id": user_id,
+                    "chat_id": chat_id,  # ✅ FIXED
+                    "query": query,
+                    "response": f"[IMAGE]{image_url}",
+                    "timestamp": datetime.utcnow()
+                })
+
+                yield f"[IMAGE]{image_url}"
+
+            except Exception as e:
+                print("IMAGE ERROR:", e)
+                yield "Image generation failed"
+
+        return StreamingResponse(stream(), media_type="text/plain")
+
+    chain = get_rag_chain(user_id)
+
+    async def stream():
+        try:
+            result = chain.invoke({"query": query})
+            answer = result.get("result") or result.get("answer") or ""
+
+            if not answer.strip():
+                answer = "Answer not found in document"
+
+            chats_collection.insert_one({
+                "user_id": user_id,
+                "chat_id": chat_id,  # ✅ FIXED
+                "query": query,
+                "response": answer,
+                "timestamp": datetime.utcnow()
+            })
+
+            for word in answer.split():
+                yield word + " "
+
+        except Exception as e:
+            print("RAG ERROR:", e)
+            yield "Something went wrong"
+
+    return StreamingResponse(stream(), media_type="text/plain")
+
+@router.post("/register")
+async def register(email: str = Form(...), password: str = Form(...)):
+    try:
+        users = get_collection("users")
+
+        password = str(password).strip()
+        password = password.encode("utf-8")[:72].decode("utf-8", "ignore")
+
+        existing_user = users.find_one({"email": email})
+        if existing_user:
+            return {"error": "User already exists"}
+
+        hashed_password = pwd_context.hash(password)
+
+        result = users.insert_one({
+            "email": email,
+            "password": hashed_password
+        })
+
+        return {"user_id": str(result.inserted_id)}
+
+    except Exception as e:
+        print("REGISTER ERROR:", e)
+        return {"error": str(e)}

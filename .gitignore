@@ -1,7 +1,19 @@
+# Python
 venv/
 __pycache__/
 *.pyc
+
+# Data (local storage)
+data/
+*.pdf
+
+# Env
 .env
-.vscode/
-.idea/
-node_modules/git init
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
