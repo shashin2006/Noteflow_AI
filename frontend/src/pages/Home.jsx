@@ -5,7 +5,7 @@ import {
   uploadPDF,
 } from "../services/api";
 
-import Sidebar from "../components/Sidebar";
+import Sidebar from "../components/SideBar";
 import ChatBox from "../components/ChatBox";
 
 export default function Home() {

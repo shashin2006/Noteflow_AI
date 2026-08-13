@@ -56,27 +56,66 @@ async def upload_pdf_cloud(
     session_id: str = Header(None, alias="session-id")
 ):
     user_id = get_user_from_session(session_id)
+
     if not user_id:
         return {"error": "Invalid session"}
 
     try:
+
+        # -----------------------------
+        # 1. Prepare upload directory
+        # -----------------------------
+
         os.makedirs("data/uploads", exist_ok=True)
 
-        file_path = f"data/uploads/{file.filename}"
+        safe_filename = f"{uuid4()}_{file.filename}"
+
+        file_path = os.path.join(
+            "data",
+            "uploads",
+            safe_filename
+        )
+
+        # -----------------------------
+        # 2. Read file
+        # -----------------------------
 
         contents = await file.read()
+
         if not contents:
             return {"error": "Empty file"}
 
         with open(file_path, "wb") as f:
             f.write(contents)
 
+        print("✅ PDF saved locally")
+
+        # -----------------------------
+        # 3. Cloudinary
+        # -----------------------------
+
         url = upload_to_cloudinary(file_path)
 
-        text = extract_text_from_pdf(file_path)
-        if not text.strip():
-            return {"error": "No text found in PDF"}
+        print("✅ Cloudinary upload successful")
 
+        # -----------------------------
+        # 4. Extract text
+        # -----------------------------
+
+        text = extract_text_from_pdf(file_path)
+
+        if not text.strip():
+            return {
+                "error": "No text found in PDF"
+            }
+
+        print(
+            f"📄 Extracted text length: {len(text)}"
+        )
+
+        # -----------------------------
+        # 5. Chunking
+        # -----------------------------
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
@@ -85,30 +124,91 @@ async def upload_pdf_cloud(
 
         chunks = splitter.split_text(text)
 
-        vector_store = load_or_create_faiss()
+        print(
+            f"🧩 Generated {len(chunks)} chunks"
+        )
 
-        vector_store.add_texts(
-            chunks,
-            metadatas=[{
+        if not chunks:
+            return {
+                "error": "No chunks generated from PDF"
+            }
+
+        # -----------------------------
+        # 6. FAISS
+        # -----------------------------
+
+        metadata = [
+            {
                 "user_id": user_id,
                 "source": file.filename
-             }] * len(chunks)
+            }
+        ] * len(chunks)
+
+        index_file = os.path.join(
+            settings.VECTOR_STORE_PATH,
+            "index.faiss"
         )
+
+        if os.path.exists(index_file):
+
+            print("📚 Loading existing FAISS")
+
+            vector_store = load_or_create_faiss()
+
+            vector_store.add_texts(
+                chunks,
+                metadatas=metadata
+            )
+
+        else:
+
+            print(
+                "🔨 Creating first FAISS index"
+            )
+
+            vector_store = load_or_create_faiss(
+                chunks=chunks,
+                user_id=user_id,
+                source=file.filename
+            )
 
         save_faiss(vector_store)
 
+        print("✅ FAISS saved")
+
+        # -----------------------------
+        # 7. MongoDB metadata
+        # -----------------------------
+
         get_collection("extra").insert_one({
-          "user_id": user_id,
-          "filename": file.filename,
-          "cloudinary_url": url,
-          "uploaded_at": datetime.utcnow()
+            "user_id": user_id,
+            "filename": file.filename,
+            "cloudinary_url": url,
+            "uploaded_at": datetime.utcnow()
         })
 
-        return {"message": "Uploaded & indexed", "url": url}
-    except Exception as e:
-        print("UPLOAD ERROR:", e)
-        return {"error": str(e)}
+        print("✅ MongoDB metadata saved")
 
+        # -----------------------------
+        # 8. Response
+        # -----------------------------
+
+        return {
+            "message": "Uploaded & indexed",
+            "url": url,
+            "chunks": len(chunks)
+        }
+
+    except Exception as e:
+
+        import traceback
+
+        print("UPLOAD ERROR:", e)
+        traceback.print_exc()
+
+        return {
+            "error": str(e)
+        }
 
 # =========================================
 # 💬 CHAT

@@ -1,6 +1,8 @@
 import os
+
 from langchain_community.vectorstores import FAISS
 from langchain.schema import Document
+
 from app.services.embeddings import get_embeddings
 from app.core.config import settings
 
@@ -8,49 +10,52 @@ from app.core.config import settings
 VECTOR_PATH = settings.VECTOR_STORE_PATH
 
 
-# =========================================
-# 🔹 LOAD OR CREATE VECTOR STORE
-# =========================================
-def load_or_create_faiss():
+def load_or_create_faiss(chunks=None, user_id=None, source=None):
+    """
+    Load an existing FAISS index.
+
+    If no index exists, create one using the supplied chunks.
+    """
+
     embeddings = get_embeddings()
-    os.makedirs(VECTOR_PATH, exist_ok=True)
 
     index_file = os.path.join(VECTOR_PATH, "index.faiss")
 
-    # ✅ LOAD EXISTING
+    # -----------------------------------------
+    # EXISTING FAISS INDEX
+    # -----------------------------------------
+
     if os.path.exists(index_file):
-        try:
-            store = FAISS.load_local(
-                VECTOR_PATH,
-                embeddings,
-                allow_dangerous_deserialization=True
-            )
-            print("✅ FAISS loaded successfully")
-            print(f"📊 Total vectors: {len(store.index_to_docstore_id)}")
-            return store
 
-        except Exception as e:
-            print("❌ FAISS load failed:", e)
+        print("📚 Loading existing FAISS index")
 
-    # ✅ CREATE EMPTY STORE (NO DUMMY DATA)
-    print("⚠️ Creating new FAISS index")
+        store = FAISS.load_local(
+            VECTOR_PATH,
+            embeddings,
+            allow_dangerous_deserialization=True
+        )
 
-    return FAISS.from_documents([], embeddings)
+        print(
+            f"✅ FAISS loaded successfully - "
+            f"{len(store.index_to_docstore_id)} vectors"
+        )
 
+        return store
 
-# =========================================
-# 🔹 ADD DOCUMENTS (WITH METADATA)
-# =========================================
-def add_documents_to_faiss(chunks, user_id, source):
-    """
-    chunks: list[str]
-    user_id: str
-    source: filename
-    """
+    # -----------------------------------------
+    # FIRST UPLOAD
+    # -----------------------------------------
 
-    store = load_or_create_faiss()
+    print("⚠️ No FAISS index found")
 
-    docs = [
+    if not chunks:
+        raise ValueError(
+            "Cannot create FAISS index: no document chunks were provided."
+        )
+
+    print("🔨 Creating new FAISS index")
+
+    documents = [
         Document(
             page_content=chunk,
             metadata={
@@ -59,23 +64,31 @@ def add_documents_to_faiss(chunks, user_id, source):
             }
         )
         for chunk in chunks
+        if chunk and chunk.strip()
     ]
 
-    store.add_documents(docs)
+    if not documents:
+        raise ValueError(
+            "Cannot create FAISS index: document chunks are empty."
+        )
 
-    print(f"✅ Added {len(docs)} chunks for user {user_id}")
+    store = FAISS.from_documents(
+        documents,
+        embeddings
+    )
 
-    save_faiss(store)
+    print(
+        f"✅ Created FAISS index with "
+        f"{len(documents)} chunks"
+    )
 
     return store
 
 
-# =========================================
-# 🔹 SAVE VECTOR STORE
-# =========================================
 def save_faiss(store):
+
     os.makedirs(VECTOR_PATH, exist_ok=True)
 
     store.save_local(VECTOR_PATH)
 
-    print("💾 FAISS saved successfully")
+    print("💾 FAISS index saved successfully")

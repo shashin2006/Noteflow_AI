@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import Landing from './pages/Landing';
-import Login from './pages/Login';
+import Login from './pages/login';
 import Home from './pages/Home';
 import Signup from "./pages/Signup";
 function App() {
